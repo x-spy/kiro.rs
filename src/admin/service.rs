@@ -439,6 +439,7 @@ impl AdminService {
             refresh_token: req.refresh_token,
             kiro_api_key: req.kiro_api_key,
             profile_arn: None,
+            provider: req.provider,
             expires_at: None,
             auth_method: Some(effective_auth_method),
             client_id: req.client_id,
@@ -764,6 +765,7 @@ impl AdminService {
             refresh_token: Some(refresh_token),
             kiro_api_key: None,
             profile_arn: None,
+            provider: item.provider,
             expires_at: None,
             auth_method: Some(auth_method),
             client_id: item.client_id,
@@ -835,7 +837,7 @@ impl AdminService {
         if let Some(provider) = &item.provider {
             let provider_lower = provider.to_lowercase();
             return match provider_lower.as_str() {
-                "builderid" | "builder-id" | "idc" => "idc".to_string(),
+                "builderid" | "builder-id" | "idc" | "enterprise" => "idc".to_string(),
                 "social" => "social".to_string(),
                 _ => "social".to_string(), // 默认 social
             };

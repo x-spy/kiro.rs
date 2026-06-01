@@ -272,21 +272,17 @@ impl CliEndpoint {
     /// bearer token but credential[0]'s ARN — server-side this either 4xx's
     /// or accounts usage to the wrong tenant.
     ///
-    /// Same auth-method gating as IDE endpoint: AWS SSO OIDC (`idc` /
-    /// `builder-id`) credentials must NOT send profileArn — strip it.
+    /// Same auth-method gating as IDE endpoint: 普通 AWS SSO OIDC
+    /// (`idc` / `builder-id`) 凭据必须剥离 profileArn；Enterprise IdC
+    /// 凭据由 ListAvailableProfiles 动态发现 ARN 后需要保留。
     fn inject_profile_arn(body: &str, credentials: &KiroCredentials) -> anyhow::Result<String> {
         let mut request: serde_json::Value = serde_json::from_str(body)?;
         let Some(obj) = request.as_object_mut() else {
             return Ok(body.to_string());
         };
-        let is_sso_oidc = matches!(
-            credentials.auth_method.as_deref(),
-            Some("builder-id") | Some("idc")
-        ) || (credentials.client_id.is_some()
-            && credentials.client_secret.is_some());
-        if is_sso_oidc {
+        if !credentials.should_send_profile_arn() {
             obj.remove("profileArn");
-        } else if let Some(arn) = credentials.profile_arn.as_deref() {
+        } else if let Some(arn) = credentials.effective_profile_arn_for_api() {
             obj.insert(
                 "profileArn".to_string(),
                 serde_json::Value::String(arn.to_string()),

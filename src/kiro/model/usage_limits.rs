@@ -252,6 +252,7 @@ impl UsageLimitsResponse {
     }
 
     /// 当前响应是否表示已开启超额
+    #[allow(dead_code)]
     pub fn overage_enabled(&self) -> bool {
         self.overage_enabled_reported().unwrap_or(false)
     }
@@ -259,6 +260,7 @@ impl UsageLimitsResponse {
     /// 获取超额额度上限。
     ///
     /// 上游有时只返回 overageEnabled=true，不稳定返回 overageCap；此时按产品/UI 约定兜底为 10000。
+    #[allow(dead_code)]
     pub fn overage_cap(&self) -> f64 {
         self.overage_cap_for_enabled(self.overage_enabled())
     }
@@ -283,6 +285,7 @@ impl UsageLimitsResponse {
     ///
     /// 与 `usage_limit()` 的区别：这里会在 overageEnabled=true 时追加 overage cap，
     /// 避免基础额度用完但超额已开启时被自动禁用。
+    #[allow(dead_code)]
     pub fn effective_usage_limit(&self) -> f64 {
         self.usage_limit() + self.overage_cap()
     }
@@ -293,6 +296,7 @@ impl UsageLimitsResponse {
     }
 
     /// 获取有效剩余额度（不会返回负数）。
+    #[allow(dead_code)]
     pub fn remaining_balance(&self) -> f64 {
         (self.effective_usage_limit() - self.current_usage()).max(0.0)
     }

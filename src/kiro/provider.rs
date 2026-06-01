@@ -1809,6 +1809,31 @@ mod tests {
     }
 
     #[test]
+    fn test_cli_endpoint_keeps_profile_arn_for_enterprise_idc() {
+        let endpoint = CliEndpoint::new();
+        let machine_id = "a".repeat(64);
+        let config = Config::default();
+        let mut credentials = KiroCredentials::default();
+        credentials.provider = Some("Enterprise".to_string());
+        credentials.auth_method = Some("idc".to_string());
+        credentials.profile_arn = Some("arn:enterprise-profile".to_string());
+        let ctx = RequestContext {
+            credentials: &credentials,
+            token: "test_token",
+            machine_id: &machine_id,
+            config: &config,
+        };
+        let body = serde_json::json!({
+            "conversationState": {"conversationId": "c1", "currentMessage": {"userInputMessage": {"content": "hi"}}}
+        });
+        let result = endpoint
+            .transform_api_body(&serde_json::to_string(&body).unwrap(), &ctx)
+            .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["profileArn"], "arn:enterprise-profile");
+    }
+
+    #[test]
     fn test_ide_endpoint_api_url() {
         let config = Config::default();
         let credentials = KiroCredentials::default();
@@ -1975,6 +2000,41 @@ mod tests {
             endpoint.decorate_mcp(reqwest::Client::new().post("https://example.com"), &ctx);
         let built = request.build().unwrap();
         assert!(built.headers().get("x-amzn-kiro-profile-arn").is_none());
+    }
+
+    #[test]
+    fn test_ide_endpoint_decorate_mcp_includes_profile_arn_for_enterprise_idc() {
+        let mut config = Config::default();
+        config.region = "us-east-1".to_string();
+        config.kiro_version = "0.8.0".to_string();
+
+        let mut credentials = KiroCredentials::default();
+        credentials.provider = Some("Enterprise".to_string());
+        credentials.auth_method = Some("idc".to_string());
+        credentials.profile_arn = Some("arn:aws:sso::123456789:profile/enterprise".to_string());
+        credentials.client_id = Some("client".to_string());
+        credentials.client_secret = Some("secret".to_string());
+        credentials.refresh_token = Some("a".repeat(150));
+        let endpoint = IdeEndpoint::new();
+        let machine_id = "a".repeat(64);
+        let ctx = RequestContext {
+            credentials: &credentials,
+            token: "test_token",
+            machine_id: &machine_id,
+            config: &config,
+        };
+        let request =
+            endpoint.decorate_mcp(reqwest::Client::new().post("https://example.com"), &ctx);
+        let built = request.build().unwrap();
+        assert_eq!(
+            built
+                .headers()
+                .get("x-amzn-kiro-profile-arn")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "arn:aws:sso::123456789:profile/enterprise"
+        );
     }
 
     #[test]
@@ -2195,6 +2255,33 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert!(parsed.get("profileArn").is_none());
         assert!(parsed.get("conversationState").is_some());
+    }
+
+    #[test]
+    fn test_ide_endpoint_inject_profile_arn_enterprise_idc_keeps_field() {
+        let mut credentials = KiroCredentials::default();
+        credentials.provider = Some("Enterprise".to_string());
+        credentials.auth_method = Some("idc".to_string());
+        credentials.profile_arn =
+            Some("arn:aws:codewhisperer:us-east-1:123456789012:profile/enterprise".to_string());
+
+        let request_body = r#"{"conversationState":{}}"#;
+        let endpoint = IdeEndpoint::new();
+        let machine_id = "a".repeat(64);
+        let config = Config::default();
+        let ctx = RequestContext {
+            credentials: &credentials,
+            token: "test_token",
+            machine_id: &machine_id,
+            config: &config,
+        };
+        let result = endpoint.transform_api_body(request_body, &ctx).unwrap();
+
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(
+            parsed["profileArn"].as_str().unwrap(),
+            "arn:aws:codewhisperer:us-east-1:123456789012:profile/enterprise"
+        );
     }
 
     #[test]

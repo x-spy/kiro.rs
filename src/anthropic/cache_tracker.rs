@@ -65,7 +65,6 @@ struct CacheBreakpoint {
 #[derive(Debug, Clone)]
 struct CacheEntry {
     token_count: i32,
-    ttl: Duration,
     expires_at: Instant,
 }
 
@@ -287,7 +286,7 @@ impl CacheTracker {
                 Some(existing) => {
                     // 不刷新 expires_at：Anthropic 真实 prompt cache TTL 从首次写入起算，
                     // 重写已存在的 prefix 不会续 TTL。
-                    // 仅单调增长 token_count；不更新 ttl，不续命。
+                    // 仅单调增长 token_count，不续命。
                     existing.token_count = existing.token_count.max(block.cumulative_tokens);
                 }
                 None => {
@@ -295,7 +294,6 @@ impl CacheTracker {
                         block.prefix_fingerprint,
                         CacheEntry {
                             token_count: block.cumulative_tokens,
-                            ttl: breakpoint.ttl,
                             expires_at: next_expiry,
                         },
                     );

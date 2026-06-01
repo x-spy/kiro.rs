@@ -112,10 +112,24 @@ impl TokenManager {
             }
         }
 
-        self.credentials
+        let token = self
+            .credentials
             .access_token
             .clone()
-            .ok_or_else(|| anyhow::anyhow!("没有可用的 accessToken"))
+            .ok_or_else(|| anyhow::anyhow!("没有可用的 accessToken"))?;
+
+        if self.credentials.needs_enterprise_profile_discovery() {
+            let profile_arn = discover_enterprise_profile_arn(
+                &self.credentials,
+                &self.config,
+                &token,
+                self.proxy.as_ref(),
+            )
+            .await?;
+            self.credentials.profile_arn = Some(profile_arn);
+        }
+
+        Ok(token)
     }
 
     /// 获取使用额度信息
@@ -414,7 +428,8 @@ async fn refresh_idc_token(
     let data: IdcRefreshResponse = response.json().await?;
 
     let mut new_credentials = credentials.clone();
-    new_credentials.access_token = Some(data.access_token);
+    let access_token = data.access_token;
+    new_credentials.access_token = Some(access_token.clone());
 
     if let Some(new_refresh_token) = data.refresh_token {
         new_credentials.refresh_token = Some(new_refresh_token);
@@ -428,11 +443,105 @@ async fn refresh_idc_token(
         tracing::info!("IdC Token 刷新成功（无过期时间）");
     }
 
-    // 注意：IDC 凭据（auth_method = "idc" 或 "builder-id"）不需要 profileArn
-    // 参考 CLIProxyAPIPlus：AWS SSO OIDC 用户发送 profileArn 反而会导致 403 错误
-    // 因此这里不再尝试获取 profileArn，保持为 None 即可
+    if new_credentials.needs_enterprise_profile_discovery() {
+        let profile_arn =
+            discover_enterprise_profile_arn(&new_credentials, config, &access_token, proxy).await?;
+        new_credentials.profile_arn = Some(profile_arn);
+    }
 
     Ok(new_credentials)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AvailableProfile {
+    arn: String,
+    #[allow(dead_code)]
+    profile_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ListAvailableProfilesResponse {
+    #[serde(default)]
+    profiles: Vec<AvailableProfile>,
+    #[allow(dead_code)]
+    next_token: Option<String>,
+}
+
+fn select_available_profile_arn(data: &ListAvailableProfilesResponse) -> Option<String> {
+    data.profiles.iter().find_map(|profile| {
+        let arn = profile.arn.trim();
+        (!arn.is_empty()).then(|| arn.to_string())
+    })
+}
+
+/// Enterprise IdC 账号不会在本地凭据中携带 profileArn，需要先调用
+/// ListAvailableProfiles 获取实际 ARN，再随 generateAssistantResponse 发送。
+async fn discover_enterprise_profile_arn(
+    credentials: &KiroCredentials,
+    config: &Config,
+    token: &str,
+    proxy: Option<&ProxyConfig>,
+) -> anyhow::Result<String> {
+    let region = credentials.effective_api_region(config);
+    let host = format!("q.{}.amazonaws.com", region);
+    let url = format!("https://{}/ListAvailableProfiles", host);
+    let machine_id = machine_id::generate_from_credentials(credentials, config)
+        .ok_or_else(|| anyhow::anyhow!("无法生成 machineId"))?;
+
+    tracing::info!(
+        region = %region,
+        "正在发现 Enterprise profileArn"
+    );
+
+    let client = build_client(proxy, 60, config.tls_backend)?;
+    let response = client
+        .post(&url)
+        .header("content-type", "application/json")
+        .header(
+            "x-amz-user-agent",
+            format!("aws-sdk-js/1.0.0 KiroIDE-{}-{}", config.kiro_version, machine_id),
+        )
+        .header(
+            "user-agent",
+            format!(
+                "aws-sdk-js/1.0.0 ua/2.1 os/{} lang/js md/nodejs#{} api/codewhispererruntime#1.0.0 m/N,E KiroIDE-{}-{}",
+                config.system_version, config.node_version, config.kiro_version, machine_id
+            ),
+        )
+        .header("host", &host)
+        .header("amz-sdk-invocation-id", uuid::Uuid::new_v4().to_string())
+        .header("amz-sdk-request", "attempt=1; max=1")
+        .header("Authorization", format!("Bearer {}", token))
+        .header("Connection", "close")
+        .body("{}")
+        .send()
+        .await?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body_text = response.text().await.unwrap_or_default();
+        bail!("Enterprise profileArn 发现失败: {} {}", status, body_text);
+    }
+
+    let body_text = response.text().await?;
+    let data: ListAvailableProfilesResponse = serde_json::from_str(&body_text).map_err(|e| {
+        tracing::error!(
+            "ListAvailableProfiles JSON 解析失败: {}，原始响应: {}",
+            e,
+            body_text
+        );
+        anyhow::anyhow!("ListAvailableProfiles JSON 解析失败: {}", e)
+    })?;
+    let profile_arn = select_available_profile_arn(&data)
+        .ok_or_else(|| anyhow::anyhow!("Enterprise 账号没有可用 profile"))?;
+
+    tracing::info!(
+        profile_count = data.profiles.len(),
+        "Enterprise profileArn 发现成功"
+    );
+    Ok(profile_arn)
 }
 
 fn endpoint_for_credentials(
@@ -2026,11 +2135,47 @@ impl MultiTokenManager {
                 .ok_or_else(|| anyhow::anyhow!("没有可用的 accessToken"))?
         };
 
+        let creds = self
+            .ensure_enterprise_profile_arn(id, creds, &token, &config)
+            .await?;
+
         Ok(CallContext {
             id,
             credentials: creds,
             token,
         })
+    }
+
+    async fn ensure_enterprise_profile_arn(
+        &self,
+        id: u64,
+        mut credentials: KiroCredentials,
+        token: &str,
+        config: &Config,
+    ) -> anyhow::Result<KiroCredentials> {
+        if !credentials.needs_enterprise_profile_discovery() {
+            return Ok(credentials);
+        }
+
+        let proxy = self.proxy.read().clone();
+        let profile_arn =
+            discover_enterprise_profile_arn(&credentials, config, token, proxy.as_ref())
+                .await
+                .map_err(|e| anyhow::anyhow!("Enterprise profileArn 自动发现失败: {}", e))?;
+        credentials.profile_arn = Some(profile_arn.clone());
+
+        {
+            let mut entries = self.entries.lock();
+            if let Some(entry) = entries.iter_mut().find(|e| e.id == id) {
+                entry.credentials.profile_arn = Some(profile_arn);
+            }
+        }
+
+        if let Err(e) = self.persist_credentials() {
+            tracing::warn!("Enterprise profileArn 持久化失败（不影响本次请求）: {}", e);
+        }
+
+        Ok(credentials)
     }
 
     /// 标记指定凭据的 accessToken 失效（强制触发后续刷新）
@@ -2824,10 +2969,8 @@ impl MultiTokenManager {
                 }
             }
             drop(entries);
-            if should_persist {
-                if let Err(e) = self.persist_credentials() {
-                    tracing::warn!("Overage 状态持久化失败（不影响本次状态更新）: {}", e);
-                }
+            if should_persist && let Err(e) = self.persist_credentials() {
+                tracing::warn!("Overage 状态持久化失败（不影响本次状态更新）: {}", e);
             }
         }
     }
@@ -2844,10 +2987,8 @@ impl MultiTokenManager {
             }
         }
         drop(entries);
-        if should_persist {
-            if let Err(e) = self.persist_credentials() {
-                tracing::warn!("Overage 状态持久化失败（不影响本次状态更新）: {}", e);
-            }
+        if should_persist && let Err(e) = self.persist_credentials() {
+            tracing::warn!("Overage 状态持久化失败（不影响本次状态更新）: {}", e);
         }
     }
 
@@ -3077,6 +3218,10 @@ impl MultiTokenManager {
                 .ok_or_else(|| anyhow::anyhow!("凭据不存在: {}", id))?
         };
 
+        let credentials = self
+            .ensure_enterprise_profile_arn(id, credentials, &token, &config)
+            .await?;
+
         let proxy = self.proxy.read().clone();
         let config = self.config.read().clone();
         match get_usage_limits(&credentials, &config, &token, proxy.as_ref()).await {
@@ -3088,14 +3233,13 @@ impl MultiTokenManager {
                 {
                     let mut entries = self.entries.lock();
                     if let Some(entry) = entries.iter_mut().find(|e| e.id == id) {
-                        if let Some(subscription_title) = subscription_title.as_deref() {
-                            if entry.credentials.subscription_title.as_deref()
+                        if let Some(subscription_title) = subscription_title.as_deref()
+                            && entry.credentials.subscription_title.as_deref()
                                 != Some(subscription_title)
-                            {
-                                entry.credentials.subscription_title =
-                                    Some(subscription_title.to_string());
-                                should_persist = true;
-                            }
+                        {
+                            entry.credentials.subscription_title =
+                                Some(subscription_title.to_string());
+                            should_persist = true;
                         }
 
                         if let Some(enabled) = reported_overage_enabled {
@@ -3108,10 +3252,8 @@ impl MultiTokenManager {
                     }
                 }
 
-                if should_persist {
-                    if let Err(e) = self.persist_credentials() {
-                        tracing::warn!("凭据用量状态更新后持久化失败（不影响本次请求）: {}", e);
-                    }
+                if should_persist && let Err(e) = self.persist_credentials() {
+                    tracing::warn!("凭据用量状态更新后持久化失败（不影响本次请求）: {}", e);
                 }
 
                 Ok(usage)
@@ -3190,6 +3332,7 @@ impl MultiTokenManager {
         validated_cred.priority = new_cred.priority;
         validated_cred.auth_method = new_cred.auth_method.clone();
         validated_cred.canonicalize_auth_method();
+        validated_cred.provider = new_cred.provider;
         validated_cred.client_id = new_cred.client_id;
         validated_cred.client_secret = new_cred.client_secret;
         validated_cred.region = new_cred.region;
@@ -3657,6 +3800,33 @@ mod tests {
         credentials.refresh_token = Some("a".repeat(150));
         let result = validate_refresh_token(&credentials);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_select_available_profile_arn_uses_first_non_empty_arn() {
+        let data: ListAvailableProfilesResponse = serde_json::from_str(
+            r#"{
+                "nextToken": null,
+                "profiles": [
+                    {"arn": "   ", "profileName": "empty"},
+                    {"arn": "arn:aws:codewhisperer:us-east-1:123456789012:profile/enterprise", "profileName": "Enterprise"}
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            select_available_profile_arn(&data).as_deref(),
+            Some("arn:aws:codewhisperer:us-east-1:123456789012:profile/enterprise")
+        );
+    }
+
+    #[test]
+    fn test_select_available_profile_arn_returns_none_when_empty() {
+        let data: ListAvailableProfilesResponse =
+            serde_json::from_str(r#"{"profiles":[]}"#).unwrap();
+
+        assert_eq!(select_available_profile_arn(&data), None);
     }
 
     #[test]

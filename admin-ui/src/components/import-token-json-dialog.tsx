@@ -117,6 +117,7 @@ export function ImportTokenJsonDialog({ open, onOpenChange }: ImportTokenJsonDia
     if (account.status === 'error') return null
     const authMethod = cred.authMethod as string | undefined
     return {
+      provider: account.provider as string | undefined,
       refreshToken: cred.refreshToken.trim(),
       clientId: cred.clientId as string | undefined,
       clientSecret: cred.clientSecret as string | undefined,
