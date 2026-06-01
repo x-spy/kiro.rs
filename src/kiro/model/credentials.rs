@@ -39,6 +39,13 @@ pub struct KiroCredentials {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile_arn: Option<String>,
 
+    /// 账号提供方（例如 Social / BuilderId / Enterprise）
+    ///
+    /// Enterprise IdC 账号需要通过 ListAvailableProfiles 动态发现 profileArn；
+    /// 普通 IdC / Builder-ID 账号即使配置里残留 profileArn 也不应发送。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+
     /// 过期时间 (RFC3339 格式)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<String>,
@@ -333,6 +340,39 @@ impl KiroCredentials {
         }
     }
 
+    pub fn is_sso_oidc_credential(&self) -> bool {
+        let auth_method = self.auth_method.as_deref();
+        matches!(auth_method, Some("builder-id") | Some("idc") | Some("iam"))
+            || (self.client_id.is_some() && self.client_secret.is_some())
+    }
+
+    pub fn is_enterprise_credential(&self) -> bool {
+        self.provider
+            .as_deref()
+            .is_some_and(|provider| provider.eq_ignore_ascii_case("enterprise"))
+    }
+
+    pub fn should_send_profile_arn(&self) -> bool {
+        !self.is_sso_oidc_credential() || self.is_enterprise_credential()
+    }
+
+    pub fn effective_profile_arn_for_api(&self) -> Option<&str> {
+        if self.should_send_profile_arn() {
+            self.profile_arn.as_deref()
+        } else {
+            None
+        }
+    }
+
+    pub fn needs_enterprise_profile_discovery(&self) -> bool {
+        self.is_enterprise_credential()
+            && self.is_sso_oidc_credential()
+            && self
+                .profile_arn
+                .as_deref()
+                .is_none_or(|arn| arn.trim().is_empty())
+    }
+
     pub fn is_api_key_credential(&self) -> bool {
         self.kiro_api_key
             .as_deref()
@@ -383,6 +423,56 @@ mod tests {
     }
 
     #[test]
+    fn test_enterprise_provider_parsing_and_profile_policy() {
+        let json = r#"{
+            "provider": "Enterprise",
+            "authMethod": "IdC",
+            "clientId": "client",
+            "clientSecret": "secret",
+            "profileArn": "arn:aws:test"
+        }"#;
+
+        let mut creds = KiroCredentials::from_json(json).unwrap();
+        creds.canonicalize_auth_method();
+
+        assert!(creds.is_enterprise_credential());
+        assert!(creds.is_sso_oidc_credential());
+        assert!(creds.should_send_profile_arn());
+        assert_eq!(creds.effective_profile_arn_for_api(), Some("arn:aws:test"));
+    }
+
+    #[test]
+    fn test_regular_idc_profile_policy_strips_profile_arn() {
+        let mut creds = KiroCredentials {
+            auth_method: Some("idc".to_string()),
+            client_id: Some("client".to_string()),
+            client_secret: Some("secret".to_string()),
+            profile_arn: Some("arn:aws:test".to_string()),
+            ..Default::default()
+        };
+        creds.canonicalize_auth_method();
+
+        assert!(!creds.is_enterprise_credential());
+        assert!(!creds.should_send_profile_arn());
+        assert_eq!(creds.effective_profile_arn_for_api(), None);
+    }
+
+    #[test]
+    fn test_enterprise_idc_without_profile_needs_discovery() {
+        let mut creds = KiroCredentials {
+            provider: Some("Enterprise".to_string()),
+            auth_method: Some("IdC".to_string()),
+            client_id: Some("client".to_string()),
+            client_secret: Some("secret".to_string()),
+            profile_arn: None,
+            ..Default::default()
+        };
+        creds.canonicalize_auth_method();
+
+        assert!(creds.needs_enterprise_profile_discovery());
+    }
+
+    #[test]
     fn test_from_json_with_unknown_keys() {
         let json = r#"{
             "accessToken": "test_token",
@@ -401,6 +491,7 @@ mod tests {
             refresh_token: None,
             kiro_api_key: None,
             profile_arn: None,
+            provider: None,
             expires_at: None,
             auth_method: Some("social".to_string()),
             client_id: None,
@@ -523,6 +614,7 @@ mod tests {
             refresh_token: Some("test".to_string()),
             kiro_api_key: None,
             profile_arn: None,
+            provider: None,
             expires_at: None,
             auth_method: None,
             client_id: None,
@@ -557,6 +649,7 @@ mod tests {
             refresh_token: Some("test".to_string()),
             kiro_api_key: None,
             profile_arn: None,
+            provider: None,
             expires_at: None,
             auth_method: None,
             client_id: None,
@@ -677,6 +770,7 @@ mod tests {
             refresh_token: Some("refresh".to_string()),
             kiro_api_key: None,
             profile_arn: None,
+            provider: None,
             expires_at: None,
             auth_method: Some("social".to_string()),
             client_id: None,

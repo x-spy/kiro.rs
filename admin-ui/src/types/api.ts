@@ -187,6 +187,7 @@ export type OverageEvent =
 export interface AddCredentialRequest {
   refreshToken?: string
   kiroApiKey?: string
+  provider?: string
   authMethod?: 'social' | 'idc' | 'api_key'
   clientId?: string
   clientSecret?: string

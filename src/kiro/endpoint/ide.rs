@@ -39,25 +39,15 @@ impl IdeEndpoint {
         )
     }
 
-    fn is_aws_sso_oidc_credentials(credentials: &KiroCredentials) -> bool {
-        let auth_method = credentials.auth_method.as_deref();
-        matches!(auth_method, Some("builder-id") | Some("idc"))
-            || (credentials.client_id.is_some() && credentials.client_secret.is_some())
-    }
-
     fn mcp_profile_arn_header_value(credentials: &KiroCredentials) -> Option<&str> {
-        if Self::is_aws_sso_oidc_credentials(credentials) {
-            return None;
-        }
-
-        credentials.profile_arn.as_deref()
+        credentials.effective_profile_arn_for_api()
     }
 
     fn inject_profile_arn(
         request_body: &str,
         credentials: &KiroCredentials,
     ) -> anyhow::Result<String> {
-        if Self::is_aws_sso_oidc_credentials(credentials) {
+        if !credentials.should_send_profile_arn() {
             let mut request: serde_json::Value = serde_json::from_str(request_body)?;
             if let Some(obj) = request.as_object_mut() {
                 obj.remove("profileArn");

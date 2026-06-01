@@ -706,7 +706,7 @@ pub fn aggregate_account_info(
 
             bonuses,
 
-            next_reset_date: usage.next_date_reset.clone(),
+            next_reset_date: usage.next_date_reset,
             overage_enabled,
 
             resource_detail,

@@ -151,6 +151,9 @@ pub struct AddCredentialRequest {
     /// Kiro API Key（API Key 凭据必填）
     pub kiro_api_key: Option<String>,
 
+    /// 账号提供方（例如 Social / BuilderId / Enterprise）
+    pub provider: Option<String>,
+
     /// 认证方式（可选，默认 social）
     #[serde(default = "default_auth_method")]
     pub auth_method: String,
