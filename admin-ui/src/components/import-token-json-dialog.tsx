@@ -85,6 +85,7 @@ export function ImportTokenJsonDialog({ open, onOpenChange }: ImportTokenJsonDia
           : undefined
 
       return {
+        provider: typeof obj.provider === 'string' ? obj.provider : undefined,
         email: typeof obj.email === 'string' ? obj.email : undefined,
         userId:
           typeof obj.userId === 'string' || obj.userId === null
@@ -116,8 +117,14 @@ export function ImportTokenJsonDialog({ open, onOpenChange }: ImportTokenJsonDia
     // 跳过 error 状态的账号
     if (account.status === 'error') return null
     const authMethod = cred.authMethod as string | undefined
+    const provider =
+      typeof account.provider === 'string'
+        ? account.provider
+        : typeof cred.provider === 'string'
+          ? cred.provider
+          : undefined
     return {
-      provider: account.provider as string | undefined,
+      provider,
       refreshToken: cred.refreshToken.trim(),
       clientId: cred.clientId as string | undefined,
       clientSecret: cred.clientSecret as string | undefined,
