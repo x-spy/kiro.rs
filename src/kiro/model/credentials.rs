@@ -8,6 +8,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::http_client::ProxyConfig;
+use crate::kiro::web_portal::DEFAULT_BUILDER_ID_PROFILE_ARN;
 use crate::model::config::Config;
 
 /// Kiro OAuth 凭证
@@ -42,7 +43,8 @@ pub struct KiroCredentials {
     /// 账号提供方（例如 Social / BuilderId / Enterprise）
     ///
     /// Enterprise IdC 账号需要通过 ListAvailableProfiles 动态发现 profileArn；
-    /// 普通 IdC / Builder-ID 账号即使配置里残留 profileArn 也不应发送。
+    /// BuilderId IdC 账号使用平台默认 profileArn；普通 IdC 账号即使配置里残留
+    /// profileArn 也不应发送。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
 
@@ -139,6 +141,14 @@ fn canonicalize_auth_method_value(value: &str) -> &str {
     } else {
         value
     }
+}
+
+fn normalize_identity_label(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| !matches!(ch, '-' | '_' | ' '))
+        .collect::<String>()
+        .to_ascii_lowercase()
 }
 
 /// 凭据配置（支持单对象或数组格式）
@@ -349,19 +359,37 @@ impl KiroCredentials {
     pub fn is_enterprise_credential(&self) -> bool {
         self.provider
             .as_deref()
-            .is_some_and(|provider| provider.eq_ignore_ascii_case("enterprise"))
+            .is_some_and(|provider| normalize_identity_label(provider) == "enterprise")
+    }
+
+    pub fn is_builder_id_credential(&self) -> bool {
+        self.provider
+            .as_deref()
+            .is_some_and(|provider| normalize_identity_label(provider) == "builderid")
     }
 
     pub fn should_send_profile_arn(&self) -> bool {
-        !self.is_sso_oidc_credential() || self.is_enterprise_credential()
+        !self.is_sso_oidc_credential()
+            || self.is_enterprise_credential()
+            || self.is_builder_id_credential()
     }
 
     pub fn effective_profile_arn_for_api(&self) -> Option<&str> {
-        if self.should_send_profile_arn() {
-            self.profile_arn.as_deref()
-        } else {
-            None
+        if !self.should_send_profile_arn() {
+            return None;
         }
+
+        if let Some(profile_arn) = self.profile_arn.as_deref()
+            && !profile_arn.trim().is_empty()
+        {
+            return Some(profile_arn);
+        }
+
+        if self.is_builder_id_credential() {
+            return Some(DEFAULT_BUILDER_ID_PROFILE_ARN);
+        }
+
+        None
     }
 
     pub fn needs_enterprise_profile_discovery(&self) -> bool {
@@ -439,6 +467,48 @@ mod tests {
         assert!(creds.is_sso_oidc_credential());
         assert!(creds.should_send_profile_arn());
         assert_eq!(creds.effective_profile_arn_for_api(), Some("arn:aws:test"));
+    }
+
+    #[test]
+    fn test_builder_id_provider_uses_default_profile_policy() {
+        let json = r#"{
+            "provider": "BuilderId",
+            "authMethod": "IdC",
+            "clientId": "client",
+            "clientSecret": "secret",
+            "profileArn": null
+        }"#;
+
+        let mut creds = KiroCredentials::from_json(json).unwrap();
+        creds.canonicalize_auth_method();
+
+        assert!(creds.is_builder_id_credential());
+        assert!(creds.is_sso_oidc_credential());
+        assert!(creds.should_send_profile_arn());
+        assert_eq!(
+            creds.effective_profile_arn_for_api(),
+            Some(DEFAULT_BUILDER_ID_PROFILE_ARN)
+        );
+        assert!(!creds.needs_enterprise_profile_discovery());
+    }
+
+    #[test]
+    fn test_builder_id_provider_prefers_configured_profile() {
+        let mut creds = KiroCredentials {
+            provider: Some("builder-id".to_string()),
+            auth_method: Some("idc".to_string()),
+            client_id: Some("client".to_string()),
+            client_secret: Some("secret".to_string()),
+            profile_arn: Some("arn:aws:test-builder".to_string()),
+            ..Default::default()
+        };
+        creds.canonicalize_auth_method();
+
+        assert!(creds.is_builder_id_credential());
+        assert_eq!(
+            creds.effective_profile_arn_for_api(),
+            Some("arn:aws:test-builder")
+        );
     }
 
     #[test]

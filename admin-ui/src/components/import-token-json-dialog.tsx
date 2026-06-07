@@ -86,6 +86,7 @@ export function ImportTokenJsonDialog({ open, onOpenChange }: ImportTokenJsonDia
 
       return {
         provider: typeof obj.provider === 'string' ? obj.provider : undefined,
+        profileArn: typeof obj.profileArn === 'string' ? obj.profileArn : undefined,
         email: typeof obj.email === 'string' ? obj.email : undefined,
         userId:
           typeof obj.userId === 'string' || obj.userId === null
@@ -99,8 +100,10 @@ export function ImportTokenJsonDialog({ open, onOpenChange }: ImportTokenJsonDia
           clientId: typeof obj.clientId === 'string' ? obj.clientId : undefined,
           clientSecret: typeof obj.clientSecret === 'string' ? obj.clientSecret : undefined,
           region: typeof obj.region === 'string' ? obj.region : undefined,
+          apiRegion: typeof obj.apiRegion === 'string' ? obj.apiRegion : undefined,
           authMethod: typeof obj.authMethod === 'string' ? obj.authMethod : undefined,
           startUrl: typeof obj.startUrl === 'string' ? obj.startUrl : undefined,
+          profileArn: typeof obj.profileArn === 'string' ? obj.profileArn : undefined,
         },
       }
     }
@@ -123,13 +126,21 @@ export function ImportTokenJsonDialog({ open, onOpenChange }: ImportTokenJsonDia
         : typeof cred.provider === 'string'
           ? cred.provider
           : undefined
+    const profileArn =
+      typeof account.profileArn === 'string'
+        ? account.profileArn
+        : typeof cred.profileArn === 'string'
+          ? cred.profileArn
+          : undefined
     return {
       provider,
+      profileArn: profileArn?.trim() || undefined,
       refreshToken: cred.refreshToken.trim(),
       clientId: cred.clientId as string | undefined,
       clientSecret: cred.clientSecret as string | undefined,
       authMethod: (!authMethod && cred.clientId && cred.clientSecret) ? 'idc' : authMethod,
       region: cred.region as string | undefined,
+      apiRegion: cred.apiRegion as string | undefined,
       machineId: account.machineId as string | undefined,
     }
   }, [])
@@ -172,6 +183,12 @@ export function ImportTokenJsonDialog({ open, onOpenChange }: ImportTokenJsonDia
           // 兼容旧批量导入的 authRegion 字段
           if (!tokenItem.region && obj.authRegion) {
             tokenItem.region = obj.authRegion as string
+          }
+          if (!tokenItem.apiRegion && obj.apiRegion) {
+            tokenItem.apiRegion = obj.apiRegion as string
+          }
+          if (typeof tokenItem.profileArn === 'string') {
+            tokenItem.profileArn = tokenItem.profileArn.trim() || undefined
           }
           if (!tokenItem.authMethod && tokenItem.clientId && tokenItem.clientSecret) {
             tokenItem.authMethod = 'idc'

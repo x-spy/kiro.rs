@@ -7,6 +7,7 @@ use super::{KiroEndpoint, RequestContext, UsageRequestParts};
 use crate::kiro::model::credentials::KiroCredentials;
 
 pub const IDE_ENDPOINT_NAME: &str = "ide";
+const BUILDER_ID_MIN_KIRO_VERSION: &str = "0.12.263";
 
 pub struct IdeEndpoint;
 
@@ -22,19 +23,71 @@ impl IdeEndpoint {
         )
     }
 
+    fn is_version_older(version: &str, minimum: &str) -> bool {
+        let parse = |value: &str| -> Option<Vec<u32>> {
+            value
+                .split('.')
+                .map(|part| part.parse::<u32>().ok())
+                .collect()
+        };
+        let Some(version_parts) = parse(version) else {
+            return false;
+        };
+        let Some(minimum_parts) = parse(minimum) else {
+            return false;
+        };
+        let len = version_parts.len().max(minimum_parts.len());
+        for index in 0..len {
+            let current = *version_parts.get(index).unwrap_or(&0);
+            let required = *minimum_parts.get(index).unwrap_or(&0);
+            if current < required {
+                return true;
+            }
+            if current > required {
+                return false;
+            }
+        }
+        false
+    }
+
+    fn kiro_version<'a>(&self, ctx: &'a RequestContext<'_>) -> &'a str {
+        if ctx.credentials.is_builder_id_credential()
+            && Self::is_version_older(&ctx.config.kiro_version, BUILDER_ID_MIN_KIRO_VERSION)
+        {
+            BUILDER_ID_MIN_KIRO_VERSION
+        } else {
+            &ctx.config.kiro_version
+        }
+    }
+
     fn x_amz_user_agent(&self, ctx: &RequestContext<'_>) -> String {
+        let sdk_version = if ctx.credentials.is_builder_id_credential() {
+            "1.0.39"
+        } else {
+            "1.0.34"
+        };
+        let kiro_version = self.kiro_version(ctx);
         format!(
-            "aws-sdk-js/1.0.34 KiroIDE-{}-{}",
-            ctx.config.kiro_version, ctx.machine_id
+            "aws-sdk-js/{} KiroIDE-{}-{}",
+            sdk_version, kiro_version, ctx.machine_id
         )
     }
 
     fn user_agent(&self, ctx: &RequestContext<'_>) -> String {
+        let (sdk_version, sdk_mode) = if ctx.credentials.is_builder_id_credential() {
+            ("1.0.39", "N")
+        } else {
+            ("1.0.34", "E")
+        };
+        let kiro_version = self.kiro_version(ctx);
         format!(
-            "aws-sdk-js/1.0.34 ua/2.1 os/{} lang/js md/nodejs#{} api/codewhispererstreaming#1.0.34 m/E KiroIDE-{}-{}",
+            "aws-sdk-js/{} ua/2.1 os/{} lang/js md/nodejs#{} api/codewhispererstreaming#{} m/{} KiroIDE-{}-{}",
+            sdk_version,
             ctx.config.system_version,
             ctx.config.node_version,
-            ctx.config.kiro_version,
+            sdk_version,
+            sdk_mode,
+            kiro_version,
             ctx.machine_id
         )
     }
@@ -99,7 +152,6 @@ impl KiroEndpoint for IdeEndpoint {
     fn decorate_api(&self, req: RequestBuilder, ctx: &RequestContext<'_>) -> RequestBuilder {
         let mut req = req
             .header("content-type", "application/json")
-            .header("x-amzn-codewhisperer-optout", "true")
             .header("x-amzn-kiro-agent-mode", "vibe")
             .header("x-amz-user-agent", self.x_amz_user_agent(ctx))
             .header("user-agent", self.user_agent(ctx))
@@ -108,6 +160,9 @@ impl KiroEndpoint for IdeEndpoint {
             .header("amz-sdk-request", "attempt=1; max=3")
             .header("Authorization", format!("Bearer {}", ctx.token));
 
+        if !ctx.credentials.is_builder_id_credential() {
+            req = req.header("x-amzn-codewhisperer-optout", "true");
+        }
         if ctx.credentials.is_api_key_credential() {
             req = req.header("tokentype", "API_KEY");
         }
@@ -147,12 +202,13 @@ impl KiroEndpoint for IdeEndpoint {
             url.push_str(&format!("&profileArn={}", urlencoding::encode(profile_arn)));
         }
 
+        let kiro_version = self.kiro_version(ctx);
         let mut headers = vec![
             (
                 "x-amz-user-agent",
                 format!(
                     "aws-sdk-js/1.0.0 KiroIDE-{}-{}",
-                    ctx.config.kiro_version, ctx.machine_id
+                    kiro_version, ctx.machine_id
                 ),
             ),
             (
@@ -161,7 +217,7 @@ impl KiroEndpoint for IdeEndpoint {
                     "aws-sdk-js/1.0.0 ua/2.1 os/{} lang/js md/nodejs#{} api/codewhispererruntime#1.0.0 m/N,E KiroIDE-{}-{}",
                     ctx.config.system_version,
                     ctx.config.node_version,
-                    ctx.config.kiro_version,
+                    kiro_version,
                     ctx.machine_id
                 ),
             ),

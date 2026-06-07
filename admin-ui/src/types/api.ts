@@ -188,6 +188,7 @@ export interface AddCredentialRequest {
   refreshToken?: string
   kiroApiKey?: string
   provider?: string
+  profileArn?: string
   authMethod?: 'social' | 'idc' | 'api_key'
   clientId?: string
   clientSecret?: string
@@ -339,12 +340,14 @@ export interface CredentialAccountInfoResponse {
 // 官方 token.json 格式（用于解析导入）
 export interface TokenJsonItem {
   provider?: string
+  profileArn?: string
   refreshToken?: string
   clientId?: string
   clientSecret?: string
   authMethod?: string
   priority?: number
   region?: string
+  apiRegion?: string
   machineId?: string
 }
 
