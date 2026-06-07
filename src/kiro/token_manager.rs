@@ -2766,7 +2766,7 @@ impl MultiTokenManager {
                                 m.to_string()
                             }
                         }),
-                        has_profile_arn: e.credentials.profile_arn.is_some(),
+                        has_profile_arn: e.credentials.effective_profile_arn_for_api().is_some(),
                         expires_at: e.credentials.expires_at.clone(),
                         refresh_token_hash: hash,
                         email: e.credentials.email.clone(),
@@ -2918,7 +2918,7 @@ impl MultiTokenManager {
             enabled: entry.overage_enabled,
             enabling: entry.overage_enabling,
             last_error: entry.overage_last_error.clone(),
-            has_profile_arn: entry.credentials.profile_arn.is_some(),
+            has_profile_arn: entry.credentials.effective_profile_arn_for_api().is_some(),
             auth_method: entry.credentials.auth_method.clone(),
         })
     }

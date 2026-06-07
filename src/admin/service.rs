@@ -14,6 +14,7 @@ use crate::http_client::ProxyConfig;
 use crate::kiro::model::credentials::KiroCredentials;
 use crate::kiro::provider::KiroProvider;
 use crate::kiro::token_manager::{CachedBalanceInfo, MultiTokenManager};
+use crate::kiro::web_portal::DEFAULT_BUILDER_ID_PROFILE_ARN;
 use crate::model::config::{CompressionConfig, Config};
 use parking_lot::RwLock;
 
@@ -52,6 +53,17 @@ pub struct AdminService {
 }
 
 impl AdminService {
+    fn apply_builder_id_default_profile_arn(credentials: &mut KiroCredentials) {
+        if credentials.is_builder_id_credential()
+            && credentials
+                .profile_arn
+                .as_deref()
+                .is_none_or(|arn| arn.trim().is_empty())
+        {
+            credentials.profile_arn = Some(DEFAULT_BUILDER_ID_PROFILE_ARN.to_string());
+        }
+    }
+
     pub fn new(
         token_manager: Arc<MultiTokenManager>,
         kiro_provider: Option<Arc<KiroProvider>>,
@@ -423,6 +435,10 @@ impl AdminService {
             .endpoint
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
+        let profile_arn = req
+            .profile_arn
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
         if let Some(name) = endpoint.as_deref()
             && !self.known_endpoints.contains(name)
         {
@@ -433,12 +449,12 @@ impl AdminService {
                 known, name
             )));
         }
-        let new_cred = KiroCredentials {
+        let mut new_cred = KiroCredentials {
             id: None,
             access_token: None,
             refresh_token: req.refresh_token,
             kiro_api_key: req.kiro_api_key,
-            profile_arn: None,
+            profile_arn,
             provider: req.provider,
             expires_at: None,
             auth_method: Some(effective_auth_method),
@@ -459,6 +475,7 @@ impl AdminService {
             disabled: false, // 新添加的凭据默认启用
             runtime_only: false,
         };
+        Self::apply_builder_id_default_profile_arn(&mut new_cred);
 
         // 调用 token_manager 添加凭据
         let credential_id = self
@@ -759,12 +776,16 @@ impl AdminService {
             .api_region
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
-        let new_cred = KiroCredentials {
+        let profile_arn = item
+            .profile_arn
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let mut new_cred = KiroCredentials {
             id: None,
             access_token: None,
             refresh_token: Some(refresh_token),
             kiro_api_key: None,
-            profile_arn: None,
+            profile_arn,
             provider: item.provider,
             expires_at: None,
             auth_method: Some(auth_method),
@@ -785,6 +806,7 @@ impl AdminService {
             disabled: false,
             runtime_only: false,
         };
+        Self::apply_builder_id_default_profile_arn(&mut new_cred);
 
         match self.token_manager.add_credential(new_cred).await {
             Ok(credential_id) => ImportItemResult {
@@ -1096,6 +1118,7 @@ mod tests {
     use crate::kiro::model::credentials::KiroCredentials;
     use crate::kiro::provider::KiroProvider;
     use crate::kiro::token_manager::MultiTokenManager;
+    use crate::kiro::web_portal::DEFAULT_BUILDER_ID_PROFILE_ARN;
     use crate::model::config::{CompressionConfig, Config};
     use std::collections::HashSet;
     use std::env;
@@ -1146,6 +1169,40 @@ mod tests {
         let config_path = service.config.read().config_path().unwrap().to_path_buf();
         let content = fs::read_to_string(config_path).unwrap();
         serde_json::from_str(&content).unwrap()
+    }
+
+    #[test]
+    fn test_apply_builder_id_default_profile_arn() {
+        let mut credentials = KiroCredentials {
+            provider: Some("BuilderId".to_string()),
+            auth_method: Some("idc".to_string()),
+            profile_arn: None,
+            ..Default::default()
+        };
+
+        AdminService::apply_builder_id_default_profile_arn(&mut credentials);
+
+        assert_eq!(
+            credentials.profile_arn.as_deref(),
+            Some(DEFAULT_BUILDER_ID_PROFILE_ARN)
+        );
+    }
+
+    #[test]
+    fn test_token_json_item_deserializes_profile_arn() {
+        let item: TokenJsonItem = serde_json::from_str(
+            r#"{
+                "provider": "BuilderId",
+                "authMethod": "IdC",
+                "refreshToken": "refresh",
+                "profileArn": "arn:aws:test-builder"
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(item.provider.as_deref(), Some("BuilderId"));
+        assert_eq!(item.auth_method.as_deref(), Some("IdC"));
+        assert_eq!(item.profile_arn.as_deref(), Some("arn:aws:test-builder"));
     }
 
     #[tokio::test]

@@ -154,6 +154,9 @@ pub struct AddCredentialRequest {
     /// 账号提供方（例如 Social / BuilderId / Enterprise）
     pub provider: Option<String>,
 
+    /// Profile ARN（BuilderId/API Key 等账号可选）
+    pub profile_arn: Option<String>,
+
     /// 认证方式（可选，默认 social）
     #[serde(default = "default_auth_method")]
     pub auth_method: String,
@@ -320,6 +323,7 @@ impl SuccessResponse {
 #[serde(rename_all = "camelCase")]
 pub struct TokenJsonItem {
     pub provider: Option<String>,
+    pub profile_arn: Option<String>,
     pub refresh_token: Option<String>,
     pub client_id: Option<String>,
     pub client_secret: Option<String>,

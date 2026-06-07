@@ -1395,6 +1395,7 @@ mod tests {
         CliEndpoint, IdeEndpoint, default_is_bearer_token_invalid, default_is_monthly_request_limit,
     };
     use crate::kiro::model::credentials::KiroCredentials;
+    use crate::kiro::web_portal::DEFAULT_BUILDER_ID_PROFILE_ARN;
     use crate::model::config::Config;
     use reqwest::header::{AUTHORIZATION, CONNECTION, CONTENT_TYPE, HeaderValue};
 
@@ -1778,7 +1779,7 @@ mod tests {
         assert_eq!(parsed["profileArn"], "arn:per-request-correct");
     }
 
-    /// Round 4 regression: IDC / Builder-ID credentials must NOT send profileArn.
+    /// Round 4 regression: 普通 IDC 凭据不能发送 profileArn。
     #[test]
     fn test_cli_endpoint_strips_profile_arn_for_sso_oidc() {
         let endpoint = CliEndpoint::new();
@@ -1806,6 +1807,30 @@ mod tests {
             "IDC/Builder-ID auth method must strip profileArn (got: {:?})",
             parsed.get("profileArn")
         );
+    }
+
+    #[test]
+    fn test_cli_endpoint_uses_default_profile_arn_for_builder_id_provider() {
+        let endpoint = CliEndpoint::new();
+        let machine_id = "a".repeat(64);
+        let config = Config::default();
+        let mut credentials = KiroCredentials::default();
+        credentials.provider = Some("BuilderId".to_string());
+        credentials.auth_method = Some("idc".to_string());
+        let ctx = RequestContext {
+            credentials: &credentials,
+            token: "test_token",
+            machine_id: &machine_id,
+            config: &config,
+        };
+        let body = serde_json::json!({
+            "conversationState": {"conversationId": "c1", "currentMessage": {"userInputMessage": {"content": "hi"}}}
+        });
+        let result = endpoint
+            .transform_api_body(&serde_json::to_string(&body).unwrap(), &ctx)
+            .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["profileArn"], DEFAULT_BUILDER_ID_PROFILE_ARN);
     }
 
     #[test]
@@ -1945,6 +1970,50 @@ mod tests {
     }
 
     #[test]
+    fn test_ide_endpoint_decorate_api_uses_builder_id_headers() {
+        let mut config = Config::default();
+        config.region = "us-east-1".to_string();
+        config.kiro_version = "0.11.107".to_string();
+        config.system_version = "darwin#25.5.0".to_string();
+        config.node_version = "22.22.0".to_string();
+
+        let mut credentials = KiroCredentials::default();
+        credentials.provider = Some("BuilderId".to_string());
+        credentials.auth_method = Some("idc".to_string());
+        let endpoint = IdeEndpoint::new();
+        let machine_id = "a".repeat(64);
+        let ctx = RequestContext {
+            credentials: &credentials,
+            token: "test_token",
+            machine_id: &machine_id,
+            config: &config,
+        };
+        let request =
+            endpoint.decorate_api(reqwest::Client::new().post("https://example.com"), &ctx);
+        let built = request.build().unwrap();
+
+        assert!(built.headers().get("x-amzn-codewhisperer-optout").is_none());
+        assert!(
+            built
+                .headers()
+                .get("x-amz-user-agent")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("aws-sdk-js/1.0.39 KiroIDE-0.12.263-")
+        );
+        assert!(
+            built
+                .headers()
+                .get("user-agent")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains("api/codewhispererstreaming#1.0.39 m/N")
+        );
+    }
+
+    #[test]
     fn test_ide_endpoint_decorate_mcp_includes_profile_arn_for_social_auth() {
         let mut config = Config::default();
         config.region = "us-east-1".to_string();
@@ -2035,6 +2104,46 @@ mod tests {
                 .unwrap(),
             "arn:aws:sso::123456789:profile/enterprise"
         );
+    }
+
+    #[test]
+    fn test_ide_endpoint_decorate_mcp_includes_default_profile_arn_for_builder_id() {
+        let mut config = Config::default();
+        config.region = "us-east-1".to_string();
+        config.kiro_version = "0.8.0".to_string();
+
+        let mut credentials = KiroCredentials::default();
+        credentials.provider = Some("BuilderId".to_string());
+        credentials.auth_method = Some("idc".to_string());
+        credentials.client_id = Some("client".to_string());
+        credentials.client_secret = Some("secret".to_string());
+        credentials.refresh_token = Some("a".repeat(150));
+        let endpoint = IdeEndpoint::new();
+        let machine_id = "a".repeat(64);
+        let ctx = RequestContext {
+            credentials: &credentials,
+            token: "test_token",
+            machine_id: &machine_id,
+            config: &config,
+        };
+        let request =
+            endpoint.decorate_mcp(reqwest::Client::new().post("https://example.com"), &ctx);
+        let built = request.build().unwrap();
+        assert_eq!(
+            built
+                .headers()
+                .get("x-amzn-kiro-profile-arn")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            DEFAULT_BUILDER_ID_PROFILE_ARN
+        );
+
+        let usage = endpoint.usage_request_parts(&ctx).unwrap();
+        assert!(usage.url.contains(&format!(
+            "profileArn={}",
+            urlencoding::encode(DEFAULT_BUILDER_ID_PROFILE_ARN)
+        )));
     }
 
     #[test]
@@ -2304,6 +2413,31 @@ mod tests {
 
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert!(parsed.get("profileArn").is_none());
+    }
+
+    #[test]
+    fn test_ide_endpoint_inject_profile_arn_builder_id_provider_uses_default() {
+        let mut credentials = KiroCredentials::default();
+        credentials.provider = Some("BuilderId".to_string());
+        credentials.auth_method = Some("idc".to_string());
+
+        let request_body = r#"{"conversationState":{}}"#;
+        let endpoint = IdeEndpoint::new();
+        let machine_id = "a".repeat(64);
+        let config = Config::default();
+        let ctx = RequestContext {
+            credentials: &credentials,
+            token: "test_token",
+            machine_id: &machine_id,
+            config: &config,
+        };
+        let result = endpoint.transform_api_body(request_body, &ctx).unwrap();
+
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(
+            parsed["profileArn"].as_str().unwrap(),
+            DEFAULT_BUILDER_ID_PROFILE_ARN
+        );
     }
 
     #[test]
